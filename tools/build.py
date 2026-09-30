@@ -1,22 +1,35 @@
 #!/usr/bin/env python3
-"""Buduje dane strony (data/*.json) z folderu 'uporzadkowane info drogi'.
+"""Buduje stronę z folderu 'uporzadkowane info drogi'.
 
 Uruchomienie (z folderu wiki-drogowa):   python tools/build.py
-Po dodaniu/zmianie dokumentów w bazie: najpierw zaktualizuj 00_INDEKS.md
-i _TEKST_MD, potem uruchom ten skrypt ponownie.
+Wymaga: Python 3 + pypdf (pip install pypdf). Pliki .docx zamienia na PDF przez MS Word.
+
+Co robi:
+- kopiuje oryginalne PDF-y do pdf/<ID>.pdf (nazwy bez polskich znaków i spacji),
+- tworzy data/registry.json (rejestr), data/fazy.json (przewodniki po fazach z numerami stron),
+  data/wiki.json (sekcje indeksu), data/search.json (indeks wyszukiwarki pełnotekstowej).
 """
-import json, os, re, sys, unicodedata
+import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / "tools"))
+from fazy import PHASES, MATRIX, WWIORB_PHASES, GROUP_EXTRA  # noqa: E402
+
 BASE = HERE.parent / "uporzadkowane info drogi"
 MD_ROOT = BASE / "_TEKST_MD"
 INDEX = BASE / "00_INDEKS.md"
 OUT = HERE / "data"
-DOCS = OUT / "docs"
+PDF = HERE / "pdf"
+
+try:
+    import pypdf
+except ImportError:
+    sys.exit("Brak biblioteki pypdf. Zainstaluj: python -m pip install pypdf")
 
 SHORT = {
     "S1": "Klasy i kategorie dróg", "S2": "Weryfikacja podłoża drogi", "S3": "Źródła wymagań a fazy inwestycji",
+    "S4": "Jak powstaje projekt drogi w Polsce",
     "U-PB": "Prawo budowlane", "U-UDP": "Ustawa o drogach publicznych", "U-OOS": "Ustawa OOŚ (decyzja środowiskowa)",
     "U-KC": "Kodeks cywilny, art. 647–658", "U-PORD": "Prawo o ruchu drogowym", "U-PZP": "Prawo zamówień publicznych",
     "U-ZRID": "Specustawa drogowa (ZRID)",
@@ -54,218 +67,284 @@ SHORT = {
     "WT-4": "Mieszanki niezwiązane", "WT-5": "Mieszanki związane spoiwem hydraulicznym",
     "WT-OCR": "OCR skanów WT-2/I i WT-5",
 }
-# Skany bez tekstu -> gdzie szukać wersji OCR (dokument, pierwsza strona)
-REDIRECT = {"WT-2/I": ("WT-OCR", 1), "WT-5": ("WT-OCR", 53)}
+# Dokumenty spoza indeksu (dopisz tu nowe pliki, zanim trafią do 00_INDEKS.md)
+EXTRA = [
+    {"id": "S4", "cat": "sciagi", "file": "{ŚCIĄGA}Jak_powstaje_projekt_drogi_w_Polsce_poprawiony.docx",
+     "full": "Jak powstaje projekt drogi w Polsce – materiał źródłowy do ściągi",
+     "ident": "notatka własna, .docx; stan prawny wg notatki: 29.09.2026",
+     "scope": "Przebieg projektowania drogi: etapy, decyzje, zawartość opracowań; materiał dla młodszego projektanta / inżyniera budowy.",
+     "note": "Źródło wtórne, spoza 00_INDEKS.md. Wartości i odwołania weryfikuj w dokumentach źródłowych."},
+]
+# Skany: strony OCR (WT-OCR) -> (dokument oryginalny, przesunięcie)
+OCR_MAP = [(1, 52, "WT-2/I", 0), (53, 152, "WT-5", 52)]
 
 
 def slug(i):
     return re.sub(r"[^A-Za-z0-9.\-]+", "_", i)
 
 
-def clean_page(t):
-    t = t.replace("\f", "").replace("\r", "")
-    lines = [l.rstrip() for l in t.split("\n")]
-    ind = [len(l) - len(l.lstrip(" ")) for l in lines if l.strip()]
-    d = min(ind) if ind else 0
-    lines = [l[d:] if l.strip() else "" for l in lines]
-    out, blank = [], 0
-    for l in lines:
-        if not l:
-            blank += 1
-            if blank > 1:
-                continue
-        else:
-            blank = 0
-        out.append(l)
-    return "\n".join(out).strip()
-
-
-def split_pages(text):
-    parts = re.split(r"<!-- \[str\. (\d+)\] -->", text)
-    pages = []
-    for k in range(1, len(parts), 2):
-        pages.append((int(parts[k]), clean_page(parts[k + 1])))
-    if not pages:  # .docx – brak znaczników stron, cały tekst jako s. 1
-        body = re.sub(r"\A# .*\n+(Źródło:.*\n+)?", "", text)
-        body = body.replace("**", "")
-        body = re.sub(r"\\([\[\]\(\)\.\-_*#])", r"\1", body)
-        pages.append((1, clean_page(body)))
-    return pages
-
-
 def collapse(t):
     t = re.sub(r"\.{3,}", " … ", t)
     t = re.sub(r"[ \t]+", " ", t)
-    t = re.sub(r"\s*\n\s*", " ", t)
-    return t.strip()
+    return re.sub(r"\s*\n\s*", " ", t).strip()
 
 
-def find_md():
-    m = {}
-    for p in MD_ROOT.rglob("*.md"):
-        m[p.stem] = p
-    return m
+def md_pages(p):
+    parts = re.split(r"<!-- \[str\. (\d+)\] -->", p.read_text(encoding="utf-8"))
+    return [(int(parts[k]), parts[k + 1]) for k in range(1, len(parts), 2)]
 
 
+def pdf_pages(p):
+    r = pypdf.PdfReader(str(p))
+    return [(i + 1, (pg.extract_text() or "")) for i, pg in enumerate(r.pages)]
+
+
+def docx_to_pdf(src, dst):
+    if dst.exists() and dst.stat().st_mtime > src.stat().st_mtime:
+        return
+    tmp = Path(tempfile.mkdtemp())
+    a, b = tmp / "in.docx", tmp / "out.pdf"
+    shutil.copy2(src, a)   # Word źle znosi nawiasy klamrowe i polskie znaki w ścieżce przez COM
+    ps = (f"$w=New-Object -ComObject Word.Application; $w.DisplayAlerts=0; "
+          f"$d=$w.Documents.Open('{a}',$false,$true,$false); $d.ExportAsFixedFormat('{b}',17); $d.Close($false); $w.Quit()")
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=180)
+    shutil.copy2(b, dst)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------- indeks ----------
 def parse_index():
     lines = INDEX.read_text(encoding="utf-8").split("\n")
-    entries = []
-    cur_section = None
-    cur_cat = None
-    i = 0
+    entries, sec, cat, i = [], None, None, 0
     while i < len(lines):
         l = lines[i]
-        if l.startswith("### "):
-            cur_cat = l[4:].strip()
         if l.startswith("## "):
-            cur_section = l[3:].strip()
+            sec = l[3:].strip()
+        if l.startswith("### "):
+            cat = l[4:].strip()
+        in3 = sec and sec.startswith("3.")
         m = re.match(r"^\*\*(\S+)\*\* – (.+)$", l)
-        if m and cur_section and cur_section.startswith("3."):
-            e = {"id": m.group(1), "full": m.group(2).strip(), "cat": cur_cat}
+        if m and in3:
+            e = {"id": m.group(1), "full": m.group(2).strip()}
             i += 1
             while i < len(lines) and lines[i].startswith("- "):
-                b = lines[i][2:]
-                k, _, v = b.partition(":")
-                k = k.strip()
-                v = v.strip()
+                k, _, v = lines[i][2:].partition(":")
+                k, v = k.strip(), v.strip()
                 if k == "Plik":
-                    fm = re.match(r"`(.+?)`(?:,\s*(\d+)\s*s\.)?", v)
+                    fm = re.match(r"`(.+?)`", v)
                     e["file"] = fm.group(1)
-                    if fm.group(2):
-                        e["pages"] = int(fm.group(2))
-                elif k == "Identyfikator":
-                    e["ident"] = v
-                elif k == "Zakres":
-                    e["scope"] = v
-                elif k == "Struktura":
-                    e["struct"] = v
-                elif k == "Uwaga":
-                    e["note"] = v
+                else:
+                    e[{"Identyfikator": "ident", "Zakres": "scope", "Struktura": "struct", "Uwaga": "note"}.get(k, k)] = v
                 i += 1
             entries.append(e)
             continue
-        if (cur_section and cur_section.startswith("3.") and l.startswith("| ")
-                and not l.startswith("| ID") and not l.startswith("|---")):
+        if in3 and l.startswith("| ") and not l.startswith("| ID") and not l.startswith("|---"):
             c = [x.strip() for x in l.strip().strip("|").split("|")]
             if len(c) == 7:
                 f = re.match(r"`(.+)`", c[1])
-                e = {"id": c[0], "cat": cur_cat, "file": f.group(1) if f else c[1],
-                     "ident": c[2], "scope": c[4], "norms": c[5], "note": c[6]}
-                if c[3].isdigit():
-                    e["pages"] = int(c[3])
-                entries.append(e)
-            elif len(c) == 6:
-                pass
+                entries.append({"id": c[0], "file": f.group(1) if f else c[1], "ident": c[2],
+                                "scope": c[4], "norms": c[5], "note": c[6]})
         i += 1
     return entries
 
 
 def sections():
-    txt = INDEX.read_text(encoding="utf-8")
-    parts = re.split(r"(?m)^## ", txt)
-    intro = parts[0]
-    out = {"intro": intro.strip()}
+    parts = re.split(r"(?m)^## ", INDEX.read_text(encoding="utf-8"))
+    out = {"intro": parts[0].strip()}
     for p in parts[1:]:
         head, _, body = p.partition("\n")
-        n = head.split(".")[0]
-        out[n] = {"title": head.strip(), "body": body.strip()}
+        out[head.split(".")[0]] = {"title": head.strip(), "body": body.strip()}
     return out
 
 
-def norm_id_cat(e):
-    i = e["id"]
-    if i.startswith("S") and i[1:].isdigit():
-        return "sciagi"
-    if i.startswith("U-"):
-        return "ustawy"
-    if i.startswith("R-"):
-        return "rozp"
-    if i.startswith("W-"):
-        return "wwiorb"
-    if i.startswith("WR-D"):
-        return "wrd"
-    if i.startswith("WT"):
-        return "wt"
+def cat_of(i):
+    if re.match(r"^S\d+$", i): return "sciagi"
+    if i.startswith("U-"): return "ustawy"
+    if i.startswith("R-"): return "rozp"
+    if i.startswith("WR-D"): return "wrd"
+    if i.startswith("W-"): return "wwiorb"
+    if i.startswith("WT"): return "wt"
     return "inne"
 
 
+# ---------- kotwice (numer strony) ----------
+def anchor_rx(a):
+    kind, _, v = a.partition(":")
+    if kind == "art":
+        num, _, sup = v.partition("^")
+        s = (r"\.?\s*" + ("[¹1]" if sup == "1" else re.escape(sup))) if sup else ""
+        return re.compile(r"^\s*Art\.\s*" + re.escape(num) + s + r"\s*\.", re.M)
+    if kind == "par":
+        return re.compile(r"^\s*§\s*" + re.escape(v) + r"\.", re.M)
+    if kind == "pkt":
+        return re.compile(r"^\s*" + re.escape(v) + r"\.?\s*[^\W\d_]", re.M)
+    if kind == "rozdz":
+        return re.compile(r"^\s*Rozdział\s+" + re.escape(v) + r"\b", re.M | re.I)
+    if kind == "re":
+        return re.compile(v, re.M | re.I)
+    raise ValueError(a)
+
+
+def is_toc(t):
+    lines = [l for l in t.split("\n") if l.strip()]
+    if re.search(r"SPIS\s+TREŚCI", t, re.I):
+        return True
+    num = [l for l in lines if re.match(r"^\s*\d+(\.\d+)*\.?\s*\S.{0,110}$", l)]
+    return len(num) >= 8 and len(num) > 0.5 * len(lines)
+
+
+def find_page(pages, a):
+    rx = anchor_rx(a)
+    for n, t in pages:
+        if is_toc(t):
+            continue
+        for m in rx.finditer(t):
+            s = t.rfind("\n", 0, m.start()) + 1
+            e = t.find("\n", m.end())
+            line = t[s:e if e >= 0 else None]
+            if "...." in line or "…" in line:
+                continue          # wiersz spisu treści
+            if os.environ.get("WIKI_DEBUG"):
+                print(f"   {a:22} s.{n:<4} {line.strip()[:70]}")
+            return n
+    return None
+
+
+CH = [("1", r"WST[ĘE]P"), ("2", r"MATERIA"), ("3", r"SPRZ[ĘE]T"), ("4", r"TRANSPORT"), ("5", r"WYKONANIE\s+ROB"),
+      ("6", r"KONTROLA\s+JAKO"), ("7", r"OBMIAR"), ("8", r"ODBI[ÓO]R"), ("9", r"PODSTAWA\s+P"), ("10", r"PRZEPISY")]
+
+
+def wwiorb_chapters(pages):
+    hits = {n: {k for k, pat in CH if re.search(r"^\s*" + k + r"\.?\s{1,12}" + pat, t, re.M | re.I)} for n, t in pages}
+    toc = [n for n, f in hits.items() if len(f) >= 4 and n <= 5]
+    last, res = (max(toc) + 1 if toc else 1), {}
+    for k, _ in CH:
+        for n, _ in pages:
+            if n >= last and k in hits[n]:
+                res[k] = n
+                last = n
+                break
+    return res
+
+
+# ---------- main ----------
 def main():
     OUT.mkdir(exist_ok=True)
-    DOCS.mkdir(exist_ok=True)
-    for f in DOCS.glob("*.json"):
-        f.unlink()
-    mdmap = find_md()
-    entries = parse_index()
-    print("wpisy w indeksie:", len(entries))
+    PDF.mkdir(exist_ok=True)
+    old_docs = OUT / "docs"
+    if old_docs.exists():
+        shutil.rmtree(old_docs)
+    mdmap = {p.stem: p for p in MD_ROOT.rglob("*.md")}
+    src_files = {}
+    for p in BASE.rglob("*"):
+        if p.is_file() and "_TEKST_MD" not in p.parts and "_NOTION_IMPORT" not in p.parts:
+            src_files.setdefault(p.name, p)
 
-    reg = []
-    search_docs, search_rows = [], []
-    missing = []
+    entries = parse_index() + EXTRA
+    reg, texts, used_pdfs = [], {}, set()
     for e in entries:
-        cat = norm_id_cat(e)
-        item = {"id": e["id"], "slug": slug(e["id"]), "cat": cat,
-                "title": SHORT.get(e["id"]) or e.get("full", e["id"]),
-                "ident": e.get("ident", ""), "scope": e.get("scope", ""),
-                "note": e.get("note", ""), "struct": e.get("struct", ""),
-                "norms": e.get("norms", ""), "pages": e.get("pages")}
-        if "full" in e:
-            item["full"] = e["full"]
+        i = e["id"]
+        item = {"id": i, "slug": slug(i), "cat": e.get("cat") or cat_of(i),
+                "title": SHORT.get(i) or e.get("full", i), "full": e.get("full", ""),
+                "ident": e.get("ident", ""), "scope": e.get("scope", ""), "note": e.get("note", ""),
+                "struct": e.get("struct", ""), "norms": e.get("norms", "")}
         fname = e.get("file", "")
-        if e["id"] == "X-LINK":
-            url = ""
-            for p in BASE.rglob("link do strony*.txt"):
-                m = re.search(r"https?://[^\s?]+", p.read_text(encoding="utf-8", errors="ignore"))
-                if m:
-                    url = m.group(0)
-            item.update(cat="inne", title="Strona WR-D w Ministerstwie Infrastruktury", url=url, hasText=False)
-            reg.append(item)
-            continue
-        stem = re.sub(r"\.(pdf|docx|txt)$", "", fname)
-        md = mdmap.get(stem)
-        if not md:
-            # dopasowanie po znormalizowanej nazwie
-            key = re.sub(r"\W+", "", stem).lower()
-            for s, p in mdmap.items():
-                if re.sub(r"\W+", "", s).lower() == key:
-                    md = p
-                    break
-        if cat == "wwiorb" and md:
-            rel = md.relative_to(MD_ROOT).parts
-            grp = rel[-2].replace("[WWiORB] ", "").strip() if len(rel) >= 2 else ""
-            item["group"] = grp if grp and "Wzorcowe" not in grp else "Ogólne"
-        if not md:
-            missing.append(e["id"])
-            item["hasText"] = False
-            reg.append(item)
-            continue
-        pages = split_pages(md.read_text(encoding="utf-8"))
-        chars = sum(len(t) for _, t in pages)
-        item["hasText"] = chars > 800
-        item["nPages"] = len(pages)
-        if e["id"] in REDIRECT:
-            item["redirect"] = {"id": REDIRECT[e["id"]][0], "page": REDIRECT[e["id"]][1]}
-        if item["hasText"]:
-            (DOCS / (slug(e["id"]) + ".json")).write_text(
-                json.dumps({"id": e["id"], "pages": [[n, t] for n, t in pages]}, ensure_ascii=False, separators=(",", ":")),
-                encoding="utf-8")
-            di = len(search_docs)
-            search_docs.append(e["id"])
-            for n, t in pages:
-                c = collapse(t)
-                if len(c) > 20:
-                    search_rows.append([di, n, c])
+        src = src_files.get(fname)
+        if fname.endswith(".txt"):
+            m = re.search(r"https?://[^\s?]+", src.read_text(encoding="utf-8", errors="ignore")) if src else None
+            item.update(cat="inne", title="Strona WR-D w Ministerstwie Infrastruktury", url=m.group(0) if m else "")
+        elif not src:
+            print("UWAGA – nie znaleziono pliku:", i, fname)
+        else:
+            dst = PDF / (slug(i) + ".pdf")
+            md = None
+            if src.suffix.lower() == ".docx":
+                docx_to_pdf(src, dst)
+                pages = pdf_pages(dst)
+                item["converted"] = True
+            else:
+                if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                    shutil.copy2(src, dst)
+                md = mdmap.get(src.stem)
+                pages = md_pages(md) if md else pdf_pages(dst)
+            used_pdfs.add(dst.name)
+            item["pdf"] = "pdf/" + dst.name
+            item["mb"] = round(dst.stat().st_size / 1e6, 1)
+            item["nPages"] = len(pypdf.PdfReader(str(dst)).pages)
+            if md and len(pages) != item["nPages"]:
+                print(f"UWAGA – {i}: stron w tekście {len(pages)}, w PDF {item['nPages']}")
+            item["scan"] = sum(len(t.strip()) for _, t in pages) < 800
+            texts[i] = pages
+            if item["cat"] == "wwiorb":
+                grp = src.parent.name.replace("[WWiORB] ", "").strip()
+                item["group"] = "Ogólne" if "Wzorcowe" in grp else grp
+                item["ch"] = wwiorb_chapters(pages)
+        ph = WWIORB_PHASES if item["cat"] == "wwiorb" else MATRIX.get(i, "")
+        item["ph"] = ph
         reg.append(item)
-    if missing:
-        print("UWAGA – brak pliku tekstowego dla:", missing)
+    for f in PDF.glob("*.pdf"):
+        if f.name not in used_pdfs:
+            f.unlink()
+    byid = {r["id"]: r for r in reg}
 
-    sec = sections()
-    wiki = {"built": "2026-09-30", "sections": sec}
+    # --- fazy: kotwice -> strony
+    missing = []
+    fazy = []
+    for P in PHASES:
+        secs = []
+        for s in P["sections"]:
+            items = []
+            for it in s["items"]:
+                refs = []
+                for did, a, label in it["r"]:
+                    if did not in byid:
+                        missing.append(did); continue
+                    pg = 1
+                    if a and a.startswith("ch:"):
+                        pg = byid[did].get("ch", {}).get(a[3:])
+                        if pg is None:
+                            missing.append(f"{did} {a}"); pg = 1
+                    elif a:
+                        pg = find_page(texts.get(did, []), a)
+                        if pg is None:
+                            missing.append(f"{did} {a}"); pg = 1
+                    refs.append([did, pg, label])
+                items.append({"q": it["q"], "r": refs})
+            secs.append({"t": s["t"], "items": items})
+        f = {k: P[k] for k in ("key", "name", "sub", "lead")}
+        f["sections"] = secs
+        if "auto" in P:
+            f["auto"] = P["auto"]
+        fazy.append(f)
+    if missing:
+        print("UWAGA – nie znaleziono kotwic (link na s. 1):", missing)
+
+    # --- wyszukiwarka: teksty stron; OCR przepięty na oryginalne skany
+    sdocs, rows = [], []
+    def did_index(d):
+        if d not in sdocs: sdocs.append(d)
+        return sdocs.index(d)
+    for i, pages in texts.items():
+        if byid[i].get("scan"):
+            continue
+        for n, t in pages:
+            c = collapse(t)
+            if len(c) < 20: continue
+            target, pg = i, n
+            if i == "WT-OCR":
+                for a, b, orig, off in OCR_MAP:
+                    if a <= n <= b: target, pg = orig, n - off
+            rows.append([did_index(target), pg, c])
+
     (OUT / "registry.json").write_text(json.dumps(reg, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    (OUT / "wiki.json").write_text(json.dumps(wiki, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    (OUT / "search.json").write_text(json.dumps({"d": search_docs, "r": search_rows}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    tot = sum(f.stat().st_size for f in OUT.rglob("*.json"))
-    print(f"dokumentów: {len(reg)}, stron w wyszukiwarce: {len(search_rows)}, dane razem: {tot/1e6:.1f} MB")
-    print("search.json:", round((OUT / 'search.json').stat().st_size / 1e6, 1), "MB")
+    (OUT / "fazy.json").write_text(json.dumps({"phases": fazy, "groups": GROUP_EXTRA}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (OUT / "wiki.json").write_text(json.dumps({"sections": sections()}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (OUT / "search.json").write_text(json.dumps({"d": sdocs, "r": rows}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    mb = sum(f.stat().st_size for f in PDF.glob("*.pdf")) / 1e6
+    print(f"dokumentów: {len(reg)}, PDF: {len(used_pdfs)} ({mb:.0f} MB), stron w wyszukiwarce: {len(rows)}")
+    big = [f"{f.name} {f.stat().st_size/1e6:.0f} MB" for f in PDF.glob('*.pdf') if f.stat().st_size > 45e6]
+    if big:
+        print("UWAGA – pliki > 45 MB (GitHub ostrzega od 50 MB, blokuje od 100 MB):", big)
 
 
 if __name__ == "__main__":

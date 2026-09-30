@@ -21,7 +21,7 @@
 <body>
 <header class="top">
   <div class="top-in">
-    <a class="brand" href="#/"><i></i>Wiki drogowa</a>
+    <a class="brand" href="#/" aria-label="Wiki drogowa – start"><i></i><span>Wiki drogowa</span></a>
     <form class="sbox" id="sf" role="search">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input id="q" type="search" placeholder="Szukaj w całej bazie…" aria-label="Szukaj w całej bazie" autocomplete="off">
@@ -31,8 +31,12 @@
     </button>
     <nav class="nav" id="nav" aria-label="Główna nawigacja">
       <a href="#/" data-r="home">Start</a>
-      <a href="#/mapa" data-r="mapa">Mapa tematyczna</a>
+      <a class="navp ph-projektowanie" href="#/faza/projektowanie" data-r="projektowanie">Projektowanie</a>
+      <a class="navp ph-wykonawstwo" href="#/faza/wykonawstwo" data-r="wykonawstwo">Wykonawstwo</a>
+      <a class="navp ph-odbiory" href="#/faza/odbiory" data-r="odbiory">Odbiory</a>
+      <span class="sep" aria-hidden="true"></span>
       <a href="#/dok" data-r="dok">Dokumenty</a>
+      <a href="#/mapa" data-r="mapa">Mapa tematyczna</a>
       <a href="#/normy" data-r="normy">Normy</a>
       <a href="#/info" data-r="info">O bazie</a>
     </nav>

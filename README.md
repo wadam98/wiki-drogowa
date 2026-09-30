@@ -1,47 +1,40 @@
 # Wiki drogowa
 
-Osobista baza wiedzy o budownictwie drogowym: 80 dokumentów (ustawy, rozporządzenia, WWiORB, WR-D, WT GDDKiA, Twoje ściągi), ok. 4000 stron tekstu z wyszukiwarką pełnotekstową, mapą tematyczną „pytanie → dokumenty” i trybem offline. Czysty HTML/JS, bez serwera i bez bazy danych, więc działa na darmowym GitHub Pages.
+Osobista baza wiedzy o budownictwie drogowym: 80 oryginalnych dokumentów PDF (ustawy, rozporządzenia, WWiORB, WR-D, WT GDDKiA, ściągi S1–S4) podzielonych na trzy fazy inwestycji:
+
+- **Projektowanie**: ścieżka formalna (DŚU, ZRID), projekt budowlany, projekt wykonawczy i STWiORB, parametry techniczne, konstrukcja nawierzchni
+- **Wykonawstwo**: plac budowy, kierownik i dziennik budowy, umowa i podwykonawcy, materiały i badania, technologie wg WWiORB
+- **Odbiory**: rodzaje odbiorów, badania, kontrola jakości i odbiór dla każdej pozycji WWiORB, zakończenie budowy
+
+Każdy odnośnik otwiera oryginalny PDF (przeglądarka PDF.js) od razu na właściwej stronie. Wyszukiwarka pełnotekstowa obejmuje ok. 4000 stron, a wynik otwiera PDF z podświetloną frazą. Przydział dokumentów do faz pochodzi ze ściągi S3.
 
 ## Podgląd lokalny
-
-Strona wczytuje dane przez `fetch`, więc nie działa po dwukliknięciu `index.html`. Uruchom mały serwer:
 
 ```
 python -m http.server 8000
 ```
 
-i wejdź na http://localhost:8000.
+Potem wejdź na http://localhost:8000. Po dwukliknięciu `index.html` strona nie zadziała.
 
-## Publikacja na GitHub Pages (darmowa domena `nazwa.github.io`)
+## Aktualizacja strony na GitHub Pages
 
-1. Załóż konto na github.com (jeśli go nie masz).
-2. Zainstaluj **GitHub Desktop** (desktop.github.com) i zaloguj się kontem GitHub.
-3. W GitHub Desktop: *File → Add local repository…* → wskaż folder `wiki-drogowa`. Gdy program napisze, że to nie repozytorium, kliknij *create a repository*. Nazwa: `wiki-drogowa`.
-4. Kliknij *Commit to main* (opis np. „Pierwsza wersja”), potem *Publish repository*. **Odznacz „Keep this code private”**. Darmowe Pages działają tylko dla repozytoriów publicznych.
-5. Na github.com otwórz repozytorium → *Settings → Pages*. W *Build and deployment* wybierz *Source: Deploy from a branch*, *Branch: main*, folder */ (root)*, *Save*.
-6. Po 1–2 minutach strona działa pod adresem `https://TWOJ-LOGIN.github.io/wiki-drogowa/`.
+1. Zmień pliki w folderze `uporzadkowane info drogi` (i w razie potrzeby `00_INDEKS.md` oraz `_TEKST_MD`).
+2. W folderze `wiki-drogowa` uruchom `python tools/build.py`. Wymaga `pip install pypdf`, a do plików .docx także programu MS Word. Skrypt kopiuje PDF-y do `pdf/` i odtwarza `data/`.
+3. W `sw.js` zwiększ numer w `const CACHE = 'wiki-drogowa-v2'`, żeby telefony pobrały nową wersję.
+4. W GitHub Desktop: wpisz opis zmian → *Commit to main* → *Push origin*. Strona odświeży się po 1–2 minutach.
 
-## Na telefonie
-
-Otwórz adres w przeglądarce → menu → *Dodaj do ekranu głównego* (iPhone: Udostępnij → *Do ekranu początkowego*). W zakładce **O bazie → Zapisz offline** pobierzesz całą bazę (ok. 20 MB), by czytać i szukać bez zasięgu.
-
-## Aktualizacja bazy
-
-1. Zaktualizuj `00_INDEKS.md` i teksty w `_TEKST_MD` w folderze `uporzadkowane info drogi`.
-2. W folderze `wiki-drogowa` uruchom `python tools/build.py`. Skrypt odtwarza `data/`.
-3. W `sw.js` zwiększ numer w `const CACHE = 'wiki-drogowa-v1'` (np. na `v2`), żeby telefony pobrały nową wersję.
-4. W GitHub Desktop: *Commit to main* → *Push origin*. Strona odświeży się po ok. minucie.
-
-Nowy dokument dodajesz do tabeli w sekcji 3 indeksu (kolumny jak w istniejących wierszach) i, dla dokumentów spoza ściąg/ustaw/rozporządzeń, dopisujesz krótką nazwę w słowniku `SHORT` w `tools/build.py`.
+Nowy dokument dopisujesz do rejestru w `00_INDEKS.md` (sekcja 3) albo do listy `EXTRA` w `tools/build.py`. Dokumenty trafiają do faz według słownika `MATRIX` w `tools/fazy.py`. Tam też są pytania i odnośniki na stronach faz. Kotwica, np. `("U-PB", "art:22", "art. 22")`, sama znajduje numer strony w PDF-ie.
 
 ## Struktura
 
-- `index.html`, `style.css`, `app.js`: cała aplikacja (routing przez `#/…`)
-- `data/registry.json`: rejestr dokumentów; `data/wiki.json`: sekcje indeksu (mapa, normy, luki); `data/docs/*.json`: tekst dokumentów strona po stronie; `data/search.json`: indeks wyszukiwarki
-- `sw.js`, `manifest.json`, `icons/`: instalacja jako aplikacja i tryb offline
-- `tools/build.py`: generator danych (wymaga Pythona 3, bez dodatkowych bibliotek)
+- `index.html`, `style.css`, `app.js`: aplikacja (routing `#/…`, przeglądarka PDF z CDN jsDelivr: `pdfjs-dist`)
+- `pdf/`: oryginalne PDF-y pod nazwami ID (pliki .docx zamienione na PDF)
+- `data/registry.json` rejestr, `data/fazy.json` strony faz z numerami stron, `data/wiki.json` sekcje indeksu, `data/search.json` indeks wyszukiwarki
+- `tools/build.py` generator, `tools/fazy.py` treść stron faz
+- `sw.js`, `manifest.json`, `icons/`: instalacja na telefonie i offline
 
 ## Uwagi
 
-- Tekst jest wyciągnięty automatycznie z PDF/DOCX. Tabele i wzory mogą być zniekształcone, a skany WT-2/I i WT-5 mają tylko OCR o średniej jakości. Wartości liczbowe weryfikuj w oryginale.
-- Repozytorium publiczne oznacza, że każdy zobaczy zawartość, w tym Twoje ściągi S1–S3. Jeśli nie chcesz ich publikować, usuń je przed publikacją z rejestru i z `data/docs/`.
+- Repozytorium jest publiczne, więc każdy zobaczy wszystkie pliki, w tym ściągi S1–S4.
+- WT-2/I i WT-5 to skany bez tekstu. Wyszukiwarka korzysta z ich OCR (średnia jakość), ale otwiera oryginalny skan.
+- PDF-y do pracy bez zasięgu zapisujesz w przeglądarce PDF: menu ⋯ → „Zapisz offline”.
