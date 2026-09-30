@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wiki drogowa">
+<meta name="theme-color" content="#F2F1EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111314" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Osobista baza wiedzy o budownictwie drogowym: ustawy, rozporządzenia, WWiORB, WR-D, WT GDDKiA – z wyszukiwarką pełnotekstową.">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/favicon.png" type="image/png">
+<title>Wiki drogowa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="#/"><i></i>Wiki drogowa</a>
+    <form class="sbox" id="sf" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Szukaj w całej bazie…" aria-label="Szukaj w całej bazie" autocomplete="off">
+    </form>
+    <button class="icon-btn" id="th-top" type="button" aria-label="Przełącz motyw jasny / ciemny">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <nav class="nav" id="nav" aria-label="Główna nawigacja">
+      <a href="#/" data-r="home">Start</a>
+      <a href="#/mapa" data-r="mapa">Mapa tematyczna</a>
+      <a href="#/dok" data-r="dok">Dokumenty</a>
+      <a href="#/normy" data-r="normy">Normy</a>
+      <a href="#/info" data-r="info">O bazie</a>
+    </nav>
+  </div>
+</header>
+<main id="view"><p class="meta">Ładuję…</p></main>
+<noscript><p style="padding:16px">Ta strona wymaga włączonego JavaScriptu.</p></noscript>
+<footer>Materiały robocze do własnego użytku. Nie zastępują tekstów urzędowych (ISAP, Dz.U.) ani dokumentów kontraktu.</footer>
+<script src="app.js"></script>
+</body>
+</html>
